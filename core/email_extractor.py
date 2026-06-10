@@ -115,6 +115,62 @@ def is_valid_business_email(email: str) -> bool:
     return True
 
 
+def score_email_confidence(email: str, business_domain: str = "") -> int:
+    """
+    Returns a confidence score 0-100 for a business email.
+    Used for lead quality ranking. No external API required.
+    
+    Scoring bands:
+      80-100 : High confidence — domain match, professional local-part
+      50-79  : Medium — generic but real provider, or partial domain match
+      20-49  : Low — free provider, short local-part, suspicious pattern
+      0      : Junk / already filtered
+    """
+    if not email or "@" not in email:
+        return 0
+    if _is_junk_email(email):
+        return 0
+
+    local, domain = email.lower().split("@", 1)
+    score = 50  # baseline
+
+    # +30: email domain matches business website domain
+    if business_domain:
+        biz_domain = business_domain.lower().replace("www.", "").split("/")[0]
+        if domain == biz_domain:
+            score += 30
+        elif biz_domain.endswith(f".{domain}") or domain.endswith(f".{biz_domain}"):
+            score += 15
+
+    # +15: professional local-part (name-like pattern)
+    import re as _re
+    if _re.match(r'^[a-z]+[._-][a-z]+$', local):      # john.smith / john_smith
+        score += 15
+    elif _re.match(r'^[a-z]{3,}$', local):             # plain name: john
+        score += 8
+
+    # -20: free email provider
+    FREE_PROVIDERS = {
+        "gmail.com", "yahoo.com", "hotmail.com", "outlook.com",
+        "aol.com", "icloud.com", "protonmail.com", "mail.com",
+        "zoho.com", "yandex.com",
+    }
+    if domain in FREE_PROVIDERS:
+        score -= 20
+
+    # -10: numeric-heavy local part (auto-generated feel)
+    digits = sum(c.isdigit() for c in local)
+    if digits > len(local) * 0.4:
+        score -= 10
+
+    # +5: common professional prefixes that are still business-facing
+    SOFT_PREFIXES = {"owner", "manager", "director", "ceo", "info"}
+    if local in SOFT_PREFIXES:
+        score += 5
+
+    return max(0, min(100, score))
+
+
 def _clean_email(raw: str) -> Optional[str]:
     """
     Strip query params from mailto links and validate.
@@ -136,8 +192,10 @@ def _extract_from_html(html: str) -> Optional[str]:
 
         # Pass 1: mailto: href links — most reliable
         for tag in soup.find_all("a", href=True):
-            href = tag["href"]
-            if href.lower().startswith("mailto:"):
+            href = tag.get("href")
+            if isinstance(href, list):
+                href = href[0] if href else ""
+            if isinstance(href, str) and href.lower().startswith("mailto:"):
                 result = _clean_email(href[7:])
                 if result:
                     return result
@@ -214,7 +272,7 @@ def extract_email_from_whois(website_url: str) -> Optional[str]:
             return None
 
         w = whois.whois(domain)
-        emails = w.emails
+        emails = w.get("emails") if isinstance(w, dict) else getattr(w, "emails", None)
 
         if not emails:
             return None

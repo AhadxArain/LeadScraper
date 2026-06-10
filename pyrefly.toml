@@ -1,0 +1,18 @@
+[tool.pyrefly]
+disable-type-errors-in-ide = true
+
+project-excludes = [
+    "**/__pyrefly_virtual__/**",
+    "venv/**",
+    ".venv/**",
+    "**/__pycache__/**",
+]
+
+[tool.pyrefly.errors]
+missing-attribute           = "disabled"
+bad-argument-type           = "disabled"
+unnecessary-type-conversion = "disabled"
+untyped-import              = "disabled"
+bad-function-definition     = "disabled"
+unknown-name                = "disabled"
+parse-error                 = "disabled"

@@ -7,45 +7,38 @@ from config.settings import SERPER_API_KEY, SERPER_MAPS_URL, SERPER_RESULTS_PER_
 from core.email_extractor import _EMAIL_RE, _is_junk_email, is_valid_business_email
 
 
-def _serper_request_with_retry(url: str, payload: dict, max_retries: int = 1) -> dict:
-    """Helper to perform a Serper request with a simple retry on 429/timeout."""
+def _serper_request_with_retry(url: str, payload: dict, max_retries: int = 2) -> dict:
+    """Serper POST with exponential backoff on 429/timeout only. No unconditional sleep."""
     if not SERPER_API_KEY:
         raise ValueError("SERPER_API_KEY is missing from environment variables.")
-
-    headers = {
-        "X-API-KEY":    SERPER_API_KEY,
-        "Content-Type": "application/json",
-    }
-
+    _SERPER_SESSION.headers["X-API-KEY"] = SERPER_API_KEY
     retries = 0
     while True:
         try:
-            # Let's add a short sleep just to be nice to rate limits
-            time.sleep(1)
-            resp = requests.post(
-                url,
-                json=payload,
-                headers=headers,
-                timeout=15,
-            )
-            resp.raise_for_status()
-            return resp.json()
-            
-        except requests.exceptions.HTTPError as exc:
-            if exc.response is not None and exc.response.status_code == 429:
+            resp = _SERPER_SESSION.post(url, json=payload, timeout=15)
+            if resp.status_code == 429:
                 if retries < max_retries:
                     retries += 1
-                    time.sleep(2)
+                    time.sleep(2 ** retries)   # 2s, 4s
                     continue
-            raise RuntimeError(f"Serper HTTP error: {exc}") from exc
-        except requests.exceptions.Timeout as exc:
+                raise RuntimeError("Serper rate limit exceeded after retries.")
+            resp.raise_for_status()
+            return resp.json()
+        except requests.exceptions.Timeout:
             if retries < max_retries:
                 retries += 1
-                time.sleep(2)
+                time.sleep(2 ** retries)
                 continue
-            raise RuntimeError("Serper request timed out.") from exc
+            raise RuntimeError("Serper request timed out after retries.")
+        except RuntimeError:
+            raise
         except Exception as exc:
             raise RuntimeError(f"Serper error: {exc}") from exc
+
+_SERPER_SESSION = requests.Session()
+_SERPER_SESSION.headers.update({
+    "Content-Type": "application/json",
+})
 
 
 def fetch_places(business_type: str, zip_code: str, page: int = 1) -> List[dict]:

@@ -1,0 +1,11 @@
+{
+  "exclude": [
+    "**/__pyrefly_virtual__/**",
+    "**/inmemory/**",
+    "venv",
+    ".venv",
+    "**/__pycache__/**"
+  ],
+  "useLibraryCodeForTypes": false,
+  "reportMissingImports": "none"
+}

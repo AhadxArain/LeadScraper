@@ -1,6 +1,6 @@
 import re
 import pandas as pd
-from typing import Set, Tuple
+from typing import Set, Tuple, Optional
 
 
 def _normalize(value: str) -> str:
@@ -13,17 +13,11 @@ def _normalize(value: str) -> str:
 
 
 def build_existing_keys(df: pd.DataFrame) -> Set[Tuple[str, str]]:
-    """
-    Build a set of (normalized_name, normalized_phone) tuples from
-    a DataFrame of already-saved leads. Used for O(1) duplicate lookup.
-    """
-    keys: Set[Tuple[str, str]] = set()
-    for _, row in df.iterrows():
-        name  = _normalize(row.get("business_name", ""))
-        phone = _normalize(row.get("phone", ""))
-        if name:  # name alone is the anchor; phone can be empty in edge cases
-            keys.add((name, phone))
-    return keys
+    if df.empty:
+        return set()
+    names  = df["business_name"].fillna("").astype(str).apply(_normalize)
+    phones = df["phone"].fillna("").astype(str).apply(_normalize)
+    return {(n, p) for n, p in zip(names, phones) if n}
 
 
 def is_duplicate(lead: dict, existing_keys: Set[Tuple[str, str]]) -> bool:
@@ -34,16 +28,11 @@ def is_duplicate(lead: dict, existing_keys: Set[Tuple[str, str]]) -> bool:
 
 
 def build_existing_email_keys(df: pd.DataFrame) -> Set[Tuple[str, str]]:
-    """
-    Build a set of (normalized_name, email_lower) tuples.
-    """
-    keys: Set[Tuple[str, str]] = set()
-    for _, row in df.iterrows():
-        name  = _normalize(row.get("business_name", ""))
-        email = str(row.get("email", "")).strip().lower()
-        if name and email:
-            keys.add((name, email))
-    return keys
+    if df.empty:
+        return set()
+    names  = df["business_name"].fillna("").astype(str).apply(_normalize)
+    emails = df["email"].fillna("").astype(str).str.strip().str.lower()
+    return {(n, e) for n, e in zip(names, emails) if n and e}
 
 
 def is_email_duplicate(lead: dict, existing_email_keys: Set[Tuple[str, str]]) -> bool:
@@ -55,7 +44,7 @@ def is_email_duplicate(lead: dict, existing_email_keys: Set[Tuple[str, str]]) ->
     return (name, email) in existing_email_keys
 
 
-def register_lead(lead: dict, existing_keys: Set[Tuple[str, str]], existing_email_keys: Set[Tuple[str, str]] = None) -> None:
+def register_lead(lead: dict, existing_keys: Set[Tuple[str, str]], existing_email_keys: Optional[Set[Tuple[str, str]]] = None) -> None:
     """
     Add a newly accepted lead's keys to the sets.
     """

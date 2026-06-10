@@ -1,6 +1,7 @@
 import pandas as pd
 from pathlib import Path
 from typing import List
+from filelock import FileLock
 
 from config.settings import (
     VALID_LEADS_FILE, REJECTED_LEADS_FILE,
@@ -16,30 +17,25 @@ def load_csv(filepath: Path, columns: List[str]) -> pd.DataFrame:
     """
     if filepath.exists() and filepath.stat().st_size > 0:
         try:
-            return pd.read_csv(filepath, dtype=str).fillna("")
-        except Exception:
-            pass
+            return pd.read_csv(str(filepath), dtype=str, on_bad_lines="skip").fillna("")
+        except Exception as e:
+            print(f"[load_csv] error reading {filepath}: {e}")
     return pd.DataFrame(columns=columns)
 
 
 def append_to_csv(filepath: Path, rows: List[dict], columns: List[str]) -> None:
-    """
-    Append a list of dicts to a CSV file.
-    Creates the file with headers on first write; never truncates existing data.
-    """
+    """Append rows to CSV with file lock to prevent concurrent-write corruption."""
     if not rows:
         return
-
     df = pd.DataFrame(rows)
-
-    # Ensure all schema columns exist, fill missing ones with empty string
     for col in columns:
         if col not in df.columns:
             df[col] = ""
-    df = df[columns]  # enforce column order
-
-    write_header = not filepath.exists() or filepath.stat().st_size == 0
-    df.to_csv(filepath, mode="a", header=write_header, index=False)
+    df = df[columns]
+    lock = FileLock(str(filepath) + ".lock")
+    with lock:
+        write_header = not filepath.exists() or filepath.stat().st_size == 0
+        df.to_csv(filepath, mode="a", header=write_header, index=False)
 
 
 # ── Convenience loaders used by Streamlit UI ─────────────────────────────────
@@ -75,7 +71,7 @@ def load_all_time_unique_leads() -> pd.DataFrame:
     )
     
     # Keep first occurrence (earliest scrape) per unique business
-    df = df.drop_duplicates(subset=["_name_key", "_phone_key"], keep="first")
+    df = df.drop_duplicates(subset=["_name_key"], keep="first")
     
     # Drop helper columns
     df = df.drop(columns=["_name_key", "_phone_key"])

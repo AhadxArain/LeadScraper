@@ -6,8 +6,9 @@ from config.settings import (
     VALID_LEADS_FILE, REJECTED_LEADS_FILE, EXISTING_LEADS_FILE,
     LEAD_COLUMNS, REJECTED_COLUMNS,
 )
+from concurrent.futures import ThreadPoolExecutor, as_completed, Future
 from core.serper_client   import fetch_places, search_business_email, search_email_via_site_search
-from core.email_extractor import extract_email_from_website, extract_email_from_whois
+from core.email_extractor import extract_email_from_website, extract_email_from_whois, score_email_confidence
 from core.validator       import validate_lead
 from core.deduplicator    import build_existing_keys, build_existing_email_keys, is_duplicate, is_email_duplicate, register_lead
 from storage.csv_store    import load_valid_leads, append_to_csv
@@ -114,52 +115,60 @@ def run_scraper(
                 existing_batch.append(lead)
                 yield _make_status(
                     page, valid_count, rejected_count, existing_count,
-                    f"🔄 Already exists: {biz}"
+                    f"🔄 [{valid_count}/{required_leads}] Already exists: {biz}"
                 )
                 continue
 
-            # ── Step 2: Email extraction (5-Layer) ────────────────────────────
+            # ── Step 2: Email extraction (parallel fallback) ──────────────────
             email = None
-            
-            # Layer 1: Multi-page parallel website crawl
+            email_source = ""
+
+            # Layer 1 first — highest signal, avoids unnecessary API calls
             if lead["website"]:
                 yield _make_status(
                     page, valid_count, rejected_count, existing_count,
-                    f"🔍 Layer 1: scanning website pages for {biz}..."
+                    f"🔍 Scanning {biz} website…"
                 )
                 email = extract_email_from_website(lead["website"])
-                if email: lead["email_source"] = "Layer 1 website"
+                if email:
+                    email_source = "Layer 1 website"
 
-            # Layer 2: Serper web search
+            # Layers 2-4 fire concurrently only if Layer 1 missed
             if not email:
                 yield _make_status(
                     page, valid_count, rejected_count, existing_count,
-                    f"🔎 Layer 2: Serper web search for {biz} email..."
+                    f"🔎 Deep search for {biz} email…"
                 )
-                email = search_business_email(
-                    lead["business_name"], lead["address"]
-                )
-                if email: lead["email_source"] = "Layer 2 Serper"
+                fallback_tasks: dict[Future, str] = {}
+                with ThreadPoolExecutor(max_workers=3) as pool:
+                    fallback_tasks[pool.submit(
+                        search_business_email,
+                        lead["business_name"], lead["address"]
+                    )] = "Layer 2 Serper"
 
-            # Layer 3: WHOIS lookup
-            if not email and lead["website"]:
-                yield _make_status(
-                    page, valid_count, rejected_count, existing_count,
-                    f"📋 Layer 3: WHOIS lookup for {biz}..."
-                )
-                email = extract_email_from_whois(lead["website"])
-                if email: lead["email_source"] = "Layer 3 WHOIS"
+                    if lead["website"]:
+                        fallback_tasks[pool.submit(
+                            extract_email_from_whois, lead["website"]
+                        )] = "Layer 3 WHOIS"
+                        fallback_tasks[pool.submit(
+                            search_email_via_site_search, lead["website"]
+                        )] = "Layer 4 site:search"
 
-            # Layer 4: Serper site: search
-            if not email and lead["website"]:
-                yield _make_status(
-                    page, valid_count, rejected_count, existing_count,
-                    f"🌐 Layer 4: site-search for {biz}..."
-                )
-                email = search_email_via_site_search(lead["website"])
-                if email: lead["email_source"] = "Layer 4 site:search"
+                    for future in as_completed(fallback_tasks):
+                        result = future.result()
+                        if result and not email:
+                            email = result
+                            email_source = fallback_tasks[future]
+                            # Cancel remaining — first hit wins
+                            for f in fallback_tasks:
+                                f.cancel()
 
             lead["email"] = email or ""
+            if email_source:
+                lead["email_source"] = email_source
+            # Score confidence (0-100) for quality ranking
+            biz_domain = lead.get("website", "").replace("https://", "").replace("http://", "").split("/")[0]
+            lead["email_confidence"] = score_email_confidence(email or "", biz_domain) if email else 0
 
             # ── Step 2.5: Email duplicate check ───────────────────────────────
             if is_email_duplicate(lead, existing_email_keys):
@@ -176,18 +185,19 @@ def run_scraper(
 
             if is_valid:
                 valid_count += 1
-                register_lead(lead, existing_keys, existing_email_keys)  # prevent in-run duplicates
+                register_lead(lead, existing_keys, existing_email_keys)
                 valid_batch.append(lead)
+                conf = lead.get("email_confidence", 0)
                 yield _make_status(
                     page, valid_count, rejected_count, existing_count,
-                    f"✅ Valid lead: {biz}  ({valid_count}/{required_leads})"
+                    f"✅ [{valid_count}/{required_leads}] {biz} — {lead['email']} (confidence: {conf})"
                 )
             else:
                 rejected_count += 1
                 rejected_batch.append({**lead, "rejection_reason": reason})
                 yield _make_status(
                     page, valid_count, rejected_count, existing_count,
-                    f"❌ Rejected ({reason}): {biz}"
+                    f"❌ [{valid_count}/{required_leads}] Rejected ({reason}): {biz}"
                 )
 
         page += 1

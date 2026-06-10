@@ -27,8 +27,8 @@ EMAIL_FETCH_TIMEOUT = 8  # seconds per website request
 
 # ── CSV Column Schemas ────────────────────────────────────────────────────────
 LEAD_COLUMNS = [
-    "business_name", "phone", "email", "website",
-    "address", "rating", "reviews",
+    "business_name", "phone", "email", "email_confidence", "email_source",
+    "website", "address", "rating", "reviews",
     "business_type", "zip_code", "source_url", "scraped_at",
 ]
 
