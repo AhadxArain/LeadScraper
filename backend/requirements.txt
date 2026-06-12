@@ -12,3 +12,4 @@ uvicorn>=0.28.0
 fastapi
 uvicorn[standard]
 python-multipart
+Add-Content requirements.txt "dnspython>=2.6.0"
